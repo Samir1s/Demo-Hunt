@@ -96,6 +96,61 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('roomState', { room });
   });
 
+  // Handle starting the game (Block 2.1 + 2.2)
+  socket.on('startGame', (payload: { roomId: string }) => {
+    const { roomId } = payload;
+    const room = rooms.get(roomId);
+
+    if (!room) {
+      socket.emit('error', { message: 'Room not found' });
+      return;
+    }
+
+    // Only the host can start the game
+    if (room.hostId !== socket.id) {
+      socket.emit('error', { message: 'Only the host can start the game' });
+      return;
+    }
+
+    // Must be in LOBBY phase
+    if (room.phase !== 'LOBBY') {
+      socket.emit('error', { message: 'Game has already started' });
+      return;
+    }
+
+    // Must have minimum players
+    const playerIds = Object.keys(room.players);
+    if (playerIds.length < config.MIN_PLAYERS) {
+      socket.emit('error', { message: `Need at least ${config.MIN_PLAYERS} players to start` });
+      return;
+    }
+
+    // Randomly select one player as the Demogorgon
+    const randomIndex = Math.floor(Math.random() * playerIds.length);
+    const demogorgonId = playerIds[randomIndex];
+    room.demogorgonId = demogorgonId;
+
+    // Assign roles to all players
+    for (const pid of playerIds) {
+      const player = room.players[pid];
+      player.role = pid === demogorgonId ? 'DEMOGORGON' : 'SECURITY';
+    }
+
+    // Set phase to RUNNING
+    room.phase = 'RUNNING';
+
+    // Send PRIVATE role to each player (Block 2.2 — per-socket only, never broadcast)
+    for (const pid of playerIds) {
+      const player = room.players[pid];
+      io.to(pid).emit('roleAssigned', { role: player.role });
+    }
+
+    // Broadcast phase change to ALL players in room
+    io.to(roomId).emit('phaseChanged', { phase: 'RUNNING' });
+
+    console.log(`[Game] Room ${roomId} started. Demogorgon: ${room.players[demogorgonId].nickname}`);
+  });
+
   // Handle disconnect
   socket.on('disconnect', () => {
     console.log(`[Socket] A user disconnected: ${socket.id}`);
