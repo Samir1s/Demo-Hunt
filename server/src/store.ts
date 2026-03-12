@@ -11,4 +11,9 @@ export const players = new Map<string, Player>();
 export const config = {
   MIN_PLAYERS: 2,
   MAX_PLAYERS: 10,
+  // Coordinate system — 1 unit ≈ 1 metre
+  MAP_WIDTH: 100,   // metres
+  MAP_HEIGHT: 100,  // metres
+  ALERT_RADIUS: 15, // metres — triggers LOW proximity alert
+  CAPTURE_RADIUS: 5, // metres — triggers HIGH alert / enables catch
 };

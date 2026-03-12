@@ -151,6 +151,45 @@ io.on('connection', (socket) => {
     console.log(`[Game] Room ${roomId} started. Demogorgon: ${room.players[demogorgonId].nickname}`);
   });
 
+  // Handle position updates (Block 3.1 — Coordinate System)
+  socket.on('positionUpdate', (payload: { roomId: string; position: { x: number; y: number } }) => {
+    const { roomId, position } = payload;
+    const room = rooms.get(roomId);
+
+    if (!room || room.phase !== 'RUNNING') return;
+
+    const player = room.players[socket.id];
+    if (!player || player.status !== 'ALIVE') return;
+
+    // Clamp position to map bounds
+    const clampedX = Math.max(0, Math.min(config.MAP_WIDTH, position.x));
+    const clampedY = Math.max(0, Math.min(config.MAP_HEIGHT, position.y));
+    player.position = { x: clampedX, y: clampedY };
+
+    // Build and broadcast sanitised radar snapshot
+    const playerEntries = Object.values(room.players);
+    
+    for (const recipient of playerEntries) {
+      // Build a per-player radar view
+      const radarPlayers = playerEntries
+        .filter(p => p.status === 'ALIVE')
+        .map(p => ({
+          id: p.id,
+          nickname: p.nickname,
+          // Demogorgon sees all as prey; Security sees everyone as UNKNOWN
+          roleHint: recipient.role === 'DEMOGORGON' ? 'PREY' as const : 'UNKNOWN' as const,
+          status: p.status,
+          position: p.position || { x: 0, y: 0 },
+          color: p.color,
+        }));
+
+      io.to(recipient.id).emit('radarUpdate', {
+        selfId: recipient.id,
+        players: radarPlayers,
+      });
+    }
+  });
+
   // Handle disconnect
   socket.on('disconnect', () => {
     console.log(`[Socket] A user disconnected: ${socket.id}`);
