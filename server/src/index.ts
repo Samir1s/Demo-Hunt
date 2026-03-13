@@ -75,6 +75,48 @@ function startProximityLoop(room: Room) {
   }, 200); // 5 Hz
 }
 
+// ── Consolidated endGame helper (Block 5.1)
+function endGame(room: Room, winner: 'DEMOGORGON' | 'SECURITY', reason: string) {
+  room.phase = 'FINISHED';
+  if (room.proximityInterval) { clearInterval(room.proximityInterval); room.proximityInterval = undefined; }
+  if (room.timerInterval) { clearInterval(room.timerInterval); room.timerInterval = undefined; }
+  io.to(room.id).emit('gameOver', {
+    winner,
+    reason,
+    stats: Object.values(room.players).map(p => ({
+      id: p.id, nickname: p.nickname, role: p.role, status: p.status,
+    })),
+  });
+  console.log(`[Game] Room ${room.id} — ${winner} wins! Reason: ${reason}`);
+}
+
+// ── Round Timer (Block 5.3): server-side authoritative countdown
+function startRoundTimer(room: Room) {
+  room.roundEndTime = Date.now() + config.ROUND_DURATION_MS;
+
+  room.timerInterval = setInterval(() => {
+    if (room.phase !== 'RUNNING' || !room.roundEndTime) {
+      if (room.timerInterval) { clearInterval(room.timerInterval); room.timerInterval = undefined; }
+      return;
+    }
+
+    const secondsRemaining = Math.max(0, Math.ceil((room.roundEndTime - Date.now()) / 1000));
+    io.to(room.id).emit('timerUpdate', { secondsRemaining });
+
+    if (secondsRemaining <= 0) {
+      // Time's up — evaluate win condition
+      const aliveSecurity = Object.values(room.players)
+        .filter(p => p.role === 'SECURITY' && p.status === 'ALIVE').length;
+
+      if (aliveSecurity > 0) {
+        endGame(room, 'SECURITY', 'Time expired — Security agents survived!');
+      } else {
+        endGame(room, 'DEMOGORGON', 'Time expired — all Security agents were caught!');
+      }
+    }
+  }, 1000); // 1 Hz
+}
+
 // HTTP Routes
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -201,6 +243,9 @@ io.on('connection', (socket) => {
     // Start the 5 Hz proximity engine for this room
     startProximityLoop(room);
 
+    // Start the round timer (Block 5.3)
+    startRoundTimer(room);
+
     console.log(`[Game] Room ${roomId} started. Demogorgon: ${room.players[demogorgonId].nickname}`);
   });
 
@@ -286,14 +331,7 @@ io.on('connection', (socket) => {
       .filter(p => p.role === 'SECURITY' && p.status === 'ALIVE').length;
 
     if (aliveSecurityCount === 0) {
-      room.phase = 'FINISHED';
-      if (room.proximityInterval) { clearInterval(room.proximityInterval); room.proximityInterval = undefined; }
-      io.to(roomId).emit('gameOver', {
-        winner: 'DEMOGORGON',
-        reason: 'All Security agents were caught',
-        stats: Object.values(room.players).map(p => ({ id: p.id, nickname: p.nickname, role: p.role, status: p.status })),
-      });
-      console.log(`[Game] Room ${roomId} — Demogorgon wins!`);
+      endGame(room, 'DEMOGORGON', 'All Security agents were caught');
     }
   });
 
@@ -316,15 +354,8 @@ io.on('connection', (socket) => {
 
     if (accusedPlayerId === room.demogorgonId) {
       // Correct accusation → Security wins
-      room.phase = 'FINISHED';
-      if (room.proximityInterval) { clearInterval(room.proximityInterval); room.proximityInterval = undefined; }
       io.to(roomId).emit('accusationResult', { success: true, demogorgonId: room.demogorgonId });
-      io.to(roomId).emit('gameOver', {
-        winner: 'SECURITY',
-        reason: `${accuser.nickname} correctly identified the Demogorgon!`,
-        stats: Object.values(room.players).map(p => ({ id: p.id, nickname: p.nickname, role: p.role, status: p.status })),
-      });
-      console.log(`[Game] Room ${roomId} — Security wins! ${accuser.nickname} identified the Demogorgon.`);
+      endGame(room, 'SECURITY', `${accuser.nickname} correctly identified the Demogorgon!`);
     } else {
       // Wrong accusation → penalty: lose accuse ability
       accuser.canAccuse = false;
@@ -349,6 +380,7 @@ io.on('connection', (socket) => {
           // Cleanup empty rooms
           if (Object.keys(room.players).length === 0) {
             if (room.proximityInterval) { clearInterval(room.proximityInterval); room.proximityInterval = undefined; }
+            if (room.timerInterval) { clearInterval(room.timerInterval); room.timerInterval = undefined; }
             rooms.delete(roomId);
             console.log(`[Room] Deleted empty room ${roomId}`);
           } else {
