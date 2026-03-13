@@ -15,6 +15,11 @@ export interface Player {
   status: PlayerStatus;
   color: string;
   position?: Position;
+  // Proximity hysteresis tracking (per-player, relative to Demogorgon)
+  inAlertZone?: boolean;
+  inCaptureZone?: boolean;
+  // Accuse penalty: set to false after a wrong accusation
+  canAccuse?: boolean;
 }
 
 export interface Room {
@@ -24,4 +29,6 @@ export interface Room {
   phase: RoomPhase;
   demogorgonId?: string;
   createdAt: number;
+  // Reference to the 5 Hz proximity tick interval so we can clear it
+  proximityInterval?: ReturnType<typeof setInterval>;
 }

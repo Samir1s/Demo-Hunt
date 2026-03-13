@@ -30,6 +30,51 @@ const io = new Server(server, {
   }
 });
 
+// ── Utility: Euclidean distance
+function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+}
+
+// ── Proximity Engine (Block 4.1): 5 Hz server tick with hysteresis
+function startProximityLoop(room: Room) {
+  if (room.proximityInterval) clearInterval(room.proximityInterval);
+
+  room.proximityInterval = setInterval(() => {
+    if (room.phase !== 'RUNNING' || !room.demogorgonId) {
+      clearInterval(room.proximityInterval!);
+      room.proximityInterval = undefined;
+      return;
+    }
+
+    const demogorgon = room.players[room.demogorgonId];
+    if (!demogorgon || !demogorgon.position) return;
+
+    for (const player of Object.values(room.players)) {
+      if (player.id === room.demogorgonId || player.status !== 'ALIVE' || !player.position) continue;
+
+      const dist = distance(demogorgon.position, player.position);
+      const wasInAlert = player.inAlertZone || false;
+      const wasInCapture = player.inCaptureZone || false;
+      const nowInAlert = dist <= config.ALERT_RADIUS;
+      const nowInCapture = dist <= config.CAPTURE_RADIUS;
+
+      // Hysteresis: only fire when transitioning INTO a zone
+      if (nowInCapture && !wasInCapture) {
+        io.to(player.id).emit('proximityAlert', { intensity: 'HIGH' });
+        player.inCaptureZone = true;
+        player.inAlertZone = true;
+      } else if (nowInAlert && !wasInAlert) {
+        io.to(player.id).emit('proximityAlert', { intensity: 'LOW' });
+        player.inAlertZone = true;
+      }
+
+      // Update zone tracking on exit
+      if (!nowInAlert) { player.inAlertZone = false; player.inCaptureZone = false; }
+      else if (!nowInCapture) { player.inCaptureZone = false; }
+    }
+  }, 200); // 5 Hz
+}
+
 // HTTP Routes
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -139,6 +184,11 @@ io.on('connection', (socket) => {
     // Set phase to RUNNING
     room.phase = 'RUNNING';
 
+    // Initialize accuse ability for all players
+    for (const pid of playerIds) {
+      room.players[pid].canAccuse = true;
+    }
+
     // Send PRIVATE role to each player (Block 2.2 — per-socket only, never broadcast)
     for (const pid of playerIds) {
       const player = room.players[pid];
@@ -147,6 +197,9 @@ io.on('connection', (socket) => {
 
     // Broadcast phase change to ALL players in room
     io.to(roomId).emit('phaseChanged', { phase: 'RUNNING' });
+
+    // Start the 5 Hz proximity engine for this room
+    startProximityLoop(room);
 
     console.log(`[Game] Room ${roomId} started. Demogorgon: ${room.players[demogorgonId].nickname}`);
   });
@@ -190,6 +243,96 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ── Catch Attempt (Block 4.3 — Demogorgon only)
+  socket.on('catchAttempt', (payload: { roomId: string }) => {
+    const { roomId } = payload;
+    const room = rooms.get(roomId);
+    if (!room || room.phase !== 'RUNNING') return;
+
+    // Only the Demogorgon can catch
+    if (socket.id !== room.demogorgonId) {
+      socket.emit('error', { message: 'Only the Demogorgon can catch' });
+      return;
+    }
+
+    const demogorgon = room.players[socket.id];
+    if (!demogorgon || !demogorgon.position) return;
+
+    // Find nearest alive Security within CAPTURE_RADIUS
+    let nearestId: string | null = null;
+    let nearestDist = Infinity;
+
+    for (const player of Object.values(room.players)) {
+      if (player.id === socket.id || player.status !== 'ALIVE' || !player.position) continue;
+      const dist = distance(demogorgon.position, player.position);
+      if (dist <= config.CAPTURE_RADIUS && dist < nearestDist) {
+        nearestDist = dist;
+        nearestId = player.id;
+      }
+    }
+
+    if (!nearestId) {
+      socket.emit('error', { message: 'No player close enough to catch' });
+      return;
+    }
+
+    // Mark player as caught
+    room.players[nearestId].status = 'CAUGHT';
+    io.to(roomId).emit('playerCaught', { playerId: nearestId });
+    console.log(`[Game] ${room.players[nearestId].nickname} was caught in room ${roomId}`);
+
+    // Check win condition: all Security caught → Demogorgon wins
+    const aliveSecurityCount = Object.values(room.players)
+      .filter(p => p.role === 'SECURITY' && p.status === 'ALIVE').length;
+
+    if (aliveSecurityCount === 0) {
+      room.phase = 'FINISHED';
+      if (room.proximityInterval) { clearInterval(room.proximityInterval); room.proximityInterval = undefined; }
+      io.to(roomId).emit('gameOver', {
+        winner: 'DEMOGORGON',
+        reason: 'All Security agents were caught',
+        stats: Object.values(room.players).map(p => ({ id: p.id, nickname: p.nickname, role: p.role, status: p.status })),
+      });
+      console.log(`[Game] Room ${roomId} — Demogorgon wins!`);
+    }
+  });
+
+  // ── Accuse Attempt (Block 4.3 — Security only)
+  socket.on('accuseAttempt', (payload: { roomId: string; accusedPlayerId: string }) => {
+    const { roomId, accusedPlayerId } = payload;
+    const room = rooms.get(roomId);
+    if (!room || room.phase !== 'RUNNING') return;
+
+    const accuser = room.players[socket.id];
+    if (!accuser || accuser.status !== 'ALIVE' || accuser.role !== 'SECURITY') {
+      socket.emit('error', { message: 'Only alive Security can accuse' });
+      return;
+    }
+
+    if (!accuser.canAccuse) {
+      socket.emit('error', { message: 'You have already used your accusation' });
+      return;
+    }
+
+    if (accusedPlayerId === room.demogorgonId) {
+      // Correct accusation → Security wins
+      room.phase = 'FINISHED';
+      if (room.proximityInterval) { clearInterval(room.proximityInterval); room.proximityInterval = undefined; }
+      io.to(roomId).emit('accusationResult', { success: true, demogorgonId: room.demogorgonId });
+      io.to(roomId).emit('gameOver', {
+        winner: 'SECURITY',
+        reason: `${accuser.nickname} correctly identified the Demogorgon!`,
+        stats: Object.values(room.players).map(p => ({ id: p.id, nickname: p.nickname, role: p.role, status: p.status })),
+      });
+      console.log(`[Game] Room ${roomId} — Security wins! ${accuser.nickname} identified the Demogorgon.`);
+    } else {
+      // Wrong accusation → penalty: lose accuse ability
+      accuser.canAccuse = false;
+      socket.emit('accusationResult', { success: false, demogorgonId: undefined });
+      console.log(`[Game] ${accuser.nickname} wrongly accused in room ${roomId}. Accuse ability revoked.`);
+    }
+  });
+
   // Handle disconnect
   socket.on('disconnect', () => {
     console.log(`[Socket] A user disconnected: ${socket.id}`);
@@ -205,6 +348,7 @@ io.on('connection', (socket) => {
           
           // Cleanup empty rooms
           if (Object.keys(room.players).length === 0) {
+            if (room.proximityInterval) { clearInterval(room.proximityInterval); room.proximityInterval = undefined; }
             rooms.delete(roomId);
             console.log(`[Room] Deleted empty room ${roomId}`);
           } else {
