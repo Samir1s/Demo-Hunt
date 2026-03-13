@@ -12,6 +12,7 @@ export interface Player {
   id: string; // socket.id
   nickname: string;
   role?: Role;
+  character?: string; // Character name/ID
   status: PlayerStatus;
   color: string;
   position?: Position;

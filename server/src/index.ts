@@ -35,7 +35,7 @@ function distance(a: { x: number; y: number }, b: { x: number; y: number }): num
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 }
 
-// ── Proximity Engine (Block 4.1): 5 Hz server tick with hysteresis
+// ── Proximity Engine: 5 Hz server tick with hysteresis
 function startProximityLoop(room: Room) {
   if (room.proximityInterval) clearInterval(room.proximityInterval);
 
@@ -75,7 +75,7 @@ function startProximityLoop(room: Room) {
   }, 200); // 5 Hz
 }
 
-// ── Consolidated endGame helper (Block 5.1)
+// ── Consolidated endGame helper
 function endGame(room: Room, winner: 'DEMOGORGON' | 'SECURITY', reason: string) {
   room.phase = 'FINISHED';
   if (room.proximityInterval) { clearInterval(room.proximityInterval); room.proximityInterval = undefined; }
@@ -90,7 +90,7 @@ function endGame(room: Room, winner: 'DEMOGORGON' | 'SECURITY', reason: string) 
   console.log(`[Game] Room ${room.id} — ${winner} wins! Reason: ${reason}`);
 }
 
-// ── Round Timer (Block 5.3): server-side authoritative countdown
+// ── Round Timer: server-side authoritative countdown
 function startRoundTimer(room: Room) {
   room.roundEndTime = Date.now() + config.ROUND_DURATION_MS;
 
@@ -221,15 +221,11 @@ io.on('connection', (socket) => {
     for (const pid of playerIds) {
       const player = room.players[pid];
       player.role = pid === demogorgonId ? 'DEMOGORGON' : 'SECURITY';
+      player.canAccuse = true;
     }
 
     // Set phase to RUNNING
     room.phase = 'RUNNING';
-
-    // Initialize accuse ability for all players
-    for (const pid of playerIds) {
-      room.players[pid].canAccuse = true;
-    }
 
     // Send PRIVATE role to each player (Block 2.2 — per-socket only, never broadcast)
     for (const pid of playerIds) {
@@ -238,15 +234,45 @@ io.on('connection', (socket) => {
     }
 
     // Broadcast phase change to ALL players in room
-    io.to(roomId).emit('phaseChanged', { phase: 'RUNNING' });
+    io.to(roomId).emit('phaseChanged', { phase: 'RUNNING', subPhase: 'CHARACTER_SELECTION' });
 
     // Start the 5 Hz proximity engine for this room
     startProximityLoop(room);
 
-    // Start the round timer (Block 5.3)
+    // Start the round timer
     startRoundTimer(room);
 
     console.log(`[Game] Room ${roomId} started. Demogorgon: ${room.players[demogorgonId].nickname}`);
+  });
+
+  // Handle character selection (Block 2.3)
+  socket.on('selectCharacter', (payload: { roomId: string; character: string }) => {
+    const { roomId, character } = payload;
+    const room = rooms.get(roomId);
+
+    if (!room) return;
+
+    const player = room.players[socket.id];
+    if (!player) return;
+
+    // Check if character is already taken
+    const characterTaken = Object.values(room.players).some(p => p.id !== socket.id && p.character === character);
+    if (characterTaken) {
+      socket.emit('error', { message: 'Character already taken' });
+      return;
+    }
+
+    player.character = character;
+    console.log(`[Game] Player ${player.nickname} selected character ${character}`);
+
+    // Broadcast updated room state
+    io.to(roomId).emit('roomState', { room });
+
+    // Check if all players have selected
+    const allSelected = Object.values(room.players).every(p => !!p.character);
+    if (allSelected) {
+      io.to(roomId).emit('phaseChanged', { phase: 'RUNNING', subPhase: 'ROLE_REVEAL' });
+    }
   });
 
   // Handle position updates (Block 3.1 — Coordinate System)

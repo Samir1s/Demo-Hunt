@@ -94,6 +94,8 @@ Glitch‑themed reveal screens, different instructions per role.
 
 Add:
 
+Ideation: Players choose from 10 different theme-appropriate characters before seeing role-specific instructions.
+
 “Tap to enter Hawkins Lab” button that moves to main game screen.
 
 Short 1–2 line objective text per role (so players instantly understand what to do).
@@ -273,7 +275,7 @@ Sprint 2 – Secret Roles & Transitions
 
 2.2 Private Role Events: Per‑socket role messages, global phaseChanged: RUNNING.
 
-2.3 Reveal UI: Glitch role screens with objectives + “Enter Hawkins Lab” transition.
+2.3 Reveal UI: Character selection (choose from 10 theme characters) + Glitch role screens with objectives + “Enter Hawkins Lab” transition.
 
 Sprint 3 – Radar & Movement System
 
