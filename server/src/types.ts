@@ -31,4 +31,7 @@ export interface Room {
   createdAt: number;
   // Reference to the 5 Hz proximity tick interval so we can clear it
   proximityInterval?: ReturnType<typeof setInterval>;
+  // Round timer
+  timerInterval?: ReturnType<typeof setInterval>;
+  roundEndTime?: number; // epoch ms when round ends
 }

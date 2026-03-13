@@ -16,4 +16,5 @@ export const config = {
   MAP_HEIGHT: 100,  // metres
   ALERT_RADIUS: 15, // metres — triggers LOW proximity alert
   CAPTURE_RADIUS: 5, // metres — triggers HIGH alert / enables catch
+  ROUND_DURATION_MS: 5 * 60 * 1000, // 5 minutes
 };
